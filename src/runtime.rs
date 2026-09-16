@@ -9,6 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub const AGENT: &str = "devin";
+
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -99,34 +101,35 @@ impl Runtime {
     pub fn identity(&self, pane: &Value, ancestor: bool) -> Result<Identity> {
         let agent = string(pane, "agent")?;
         ensure!(
-            matches!(agent.as_str(), "claude" | "codex"),
-            "Runtime binding is unavailable for {agent}"
+            agent == AGENT,
+            "Runtime binding is unavailable for {agent}; expected Devin CLI"
         );
         let session = &pane["agent_session"];
         ensure!(
-            session["agent"] == agent
+            session["agent"] == AGENT
                 && session["kind"] == "id"
-                && session["source"] == format!("herdr:{agent}"),
-            "Official native session identity is unavailable"
+                && session["source"] == "herdr:devin",
+            "Official native Devin session identity is unavailable"
         );
         let info = self.call(&["pane", "process-info", "--pane", &string(pane, "pane_id")?])?;
         let table = processes()?;
         let candidates = info["process_info"]["foreground_processes"]
             .as_array()
             .context("Foreground process information unavailable")?;
-        let ids: Vec<u32> = candidates
+        let mut ids: Vec<u32> = candidates
             .iter()
             .filter(|p| {
                 let name = p["name"].as_str().unwrap_or("");
                 let argv = p["argv0"].as_str().unwrap_or("");
-                Path::new(name).file_name().and_then(|x| x.to_str()) == Some(&agent)
-                    || Path::new(argv).file_name().and_then(|x| x.to_str()) == Some(&agent)
+                Path::new(name).file_name().and_then(|x| x.to_str()) == Some(AGENT)
+                    || Path::new(argv).file_name().and_then(|x| x.to_str()) == Some(AGENT)
             })
             .filter_map(|p| p["pid"].as_u64().map(|p| p as u32))
             .collect();
-        ensure!(ids.len() == 1, "Ambiguous foreground agent process");
-        let pid = ids[0];
-        let process = table.get(&pid).context("Agent process exited")?;
+        ids.sort_unstable();
+        ids.dedup();
+        let pid = launch_process(&table, &ids)?;
+        let process = table.get(&pid).context("Devin CLI process exited")?;
         if ancestor {
             ensure!(
                 is_ancestor(&table, pid, std::process::id()),
@@ -208,6 +211,28 @@ pub fn processes() -> Result<HashMap<u32, Process>> {
     }
     ensure!(!table.is_empty(), "OS process start times unavailable");
     Ok(table)
+}
+fn launch_process(table: &HashMap<u32, Process>, candidates: &[u32]) -> Result<u32> {
+    let live: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|pid| table.contains_key(pid))
+        .collect();
+    let roots: Vec<_> = live
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            !live
+                .iter()
+                .any(|parent| parent != candidate && is_ancestor(table, *parent, *candidate))
+        })
+        .collect();
+    ensure!(
+        !roots.is_empty(),
+        "Foreground Devin CLI process unavailable"
+    );
+    ensure!(roots.len() == 1, "Ambiguous foreground Devin CLI launch");
+    Ok(roots[0])
 }
 fn is_ancestor(table: &HashMap<u32, Process>, expected: u32, mut child: u32) -> bool {
     for _ in 0..128 {
@@ -331,6 +356,9 @@ mod tests {
         ]);
         assert!(is_ancestor(&table, 1, 2));
         assert!(!is_ancestor(&table, 3, 2));
+        assert_eq!(launch_process(&table, &[1, 2]).unwrap(), 1);
+        assert!(launch_process(&table, &[1, 3]).is_err());
+        assert!(launch_process(&table, &[4]).is_err());
     }
 
     #[cfg(unix)]

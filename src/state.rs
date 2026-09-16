@@ -242,7 +242,7 @@ mod tests {
             endpoint: "e".into(),
             terminal: "t".into(),
             session: "s".into(),
-            agent: "codex".into(),
+            agent: "devin".into(),
             pid: 12,
             started: "launch1".into(),
         }

@@ -10,7 +10,7 @@ use runtime::{Paths, Runtime};
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(version, about = "Agent-estimated task progress for Herdr")]
+#[command(version, about = "Devin CLI-estimated task progress for Herdr")]
 struct Cli {
     #[arg(long, alias = "skill", exclusive = true)]
     instructions: bool,
@@ -58,7 +58,7 @@ enum Action {
     Configure(setup::Configure),
     Unconfigure,
     Doctor,
-    /// Human-only fallback: bind a selected live Claude/Codex and print its instructions.
+    /// Human-only fallback: bind a selected live Devin CLI session and print its instructions.
     Activate {
         #[arg(long)]
         pane: Option<String>,
@@ -70,10 +70,7 @@ enum Action {
     #[command(hide = true)]
     Serve,
     #[command(hide = true)]
-    Hook {
-        #[arg(long,value_parser=["claude","codex"])]
-        agent: String,
-    },
+    Hook,
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -89,9 +86,9 @@ fn run(cli: Cli) -> Result<()> {
         );
         return Ok(());
     }
-    if let Action::Hook { agent } = &action {
+    if matches!(&action, Action::Hook) {
         // Context-only hooks never block tools or the agent's work.
-        if let Err(e) = hooks::run(agent, &paths) {
+        if let Err(e) = hooks::run(&paths) {
             eprintln!("Agent progress unavailable: {e:#}");
         }
         return Ok(());
@@ -121,9 +118,8 @@ fn run(cli: Cli) -> Result<()> {
             println!(
                 "{}",
                 json!({"configured":paths.enabled(),"herdr_version":snapshot["snapshot"]["version"],"config_dir":paths.config,"state_dir":paths.state,
-                "automatic_adapters":"Claude Code and Codex hooks; native trust review required",
+                "automatic_adapter":"Devin CLI hooks; native trust review required",
                 "platform":"Unix process ancestry and start-time verification; Windows unavailable",
-                "other_agents":"unverified/unavailable; --instructions provides the reporting convention but cannot mint a binding",
                 "log":paths.state.join("publisher.log")})
             );
             Ok(())

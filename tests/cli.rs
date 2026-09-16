@@ -46,7 +46,7 @@ fn instruction_aliases_are_read_only_and_identical() {
 fn hooks_are_inert_outside_herdr_even_with_invalid_input() {
     let dir = tempfile::tempdir().unwrap();
     let output = cli()
-        .args(["hook", "--agent", "codex"])
+        .arg("hook")
         .env_remove("HERDR_ENV")
         .env("HERDR_PLUGIN_CONFIG_DIR", dir.path().join("config"))
         .env("HERDR_PLUGIN_STATE_DIR", dir.path().join("state"))

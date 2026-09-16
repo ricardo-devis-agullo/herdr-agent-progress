@@ -1,8 +1,8 @@
 id = "agent-progress"
-name = "Agent Progress"
+name = "Devin Agent Progress"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Shows an agent's estimated task completion and current activity in the native sidebar."
+description = "Shows Devin CLI's estimated task completion and current activity in the native sidebar."
 platforms = ["macos"]
 
 [[build]]
@@ -31,7 +31,7 @@ command = ["target/release/herdr-progress", "configure"]
 
 [[actions]]
 id = "activate"
-title = "Print bound progress instructions for selected agent"
+title = "Print bound progress instructions for selected Devin session"
 contexts = ["workspace"]
 command = ["target/release/herdr-progress", "activate"]
 

@@ -1,6 +1,6 @@
 use crate::{
     publisher,
-    runtime::{Paths, Runtime, now, quote, string},
+    runtime::{AGENT, Paths, Runtime, now, quote, string},
     state,
 };
 use anyhow::{Context, Result, ensure};
@@ -22,7 +22,7 @@ pub fn context(s: &state::Slot, paths: &Paths) -> Result<String> {
     ))
 }
 
-pub fn run(agent: &str, paths: &Paths) -> Result<()> {
+pub fn run(paths: &Paths) -> Result<()> {
     if std::env::var("HERDR_ENV").as_deref() != Ok("1") || !paths.enabled() {
         return Ok(());
     }
@@ -36,11 +36,6 @@ pub fn run(agent: &str, paths: &Paths) -> Result<()> {
     }
     let kind = string(&event, "hook_event_name")?;
     let native = string(&event, "session_id")?;
-    if agent == "codex"
-        && std::env::var("CODEX_THREAD_ID").is_ok_and(|id| !id.is_empty() && id != native)
-    {
-        return Ok(());
-    }
     let rt = Runtime::new(None)?;
     let mut c = state::open(&paths.db())?;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -50,8 +45,8 @@ pub fn run(agent: &str, paths: &Paths) -> Result<()> {
             .and_then(|p| rt.identity(&p, true))
             .and_then(|id| {
                 ensure!(
-                    id.agent == agent && id.session == native,
-                    "Hook session does not match Herdr's official session report"
+                    id.agent == AGENT && id.session == native,
+                    "Hook session does not match Herdr's official Devin session report"
                 );
                 Ok(id)
             });
@@ -82,7 +77,7 @@ pub fn run(agent: &str, paths: &Paths) -> Result<()> {
         && slot.task.as_ref().is_none_or(|t| {
             t.percent != Some(100) && !t.cleared && t.reported_at.is_none_or(|at| now() - at >= 60)
         });
-    let text = if kind == "SessionStart" {
+    let text = if matches!(kind.as_str(), "SessionStart" | "PostCompaction") {
         Some(context(&slot, paths)?)
     } else if kind == "UserPromptSubmit" {
         Some(format!(
@@ -116,20 +111,11 @@ pub fn run(agent: &str, paths: &Paths) -> Result<()> {
 }
 
 fn eligible(event: &Value) -> bool {
-    if ["agent_id", "subagent_id", "agent_transcript_path"]
-        .iter()
-        .any(|key| event.get(key).is_some_and(|v| !v.is_null()))
-    {
-        return false;
-    }
-    if event["transcript_path"]
-        .as_str()
-        .is_some_and(|p| p.contains("/subagents/"))
-    {
-        return false;
-    }
     let name = event["hook_event_name"].as_str().unwrap_or("");
-    if !matches!(name, "SessionStart" | "PostToolUse" | "UserPromptSubmit") {
+    if !matches!(
+        name,
+        "SessionStart" | "PostCompaction" | "PostToolUse" | "UserPromptSubmit"
+    ) {
         return false;
     }
     if name == "PostToolUse" && event["tool_input"].to_string().contains("herdr-progress") {
@@ -142,15 +128,13 @@ fn eligible(event: &Value) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn helpers_and_reporter_calls_do_not_trigger_reminders() {
+    fn devin_lifecycle_events_are_eligible_without_reporter_recursion() {
         assert!(!eligible(
-            &json!({"hook_event_name":"PostToolUse","agent_id":"child"})
+            &json!({"hook_event_name":"PostToolUse","tool_input":{"command":"/path/herdr-progress report"}})
         ));
-        assert!(!eligible(
-            &json!({"hook_event_name":"PostToolUse","tool_input":{"cmd":"/path/herdr-progress report"}})
-        ));
-        assert!(eligible(
-            &json!({"hook_event_name":"SessionStart","source":"compact"})
-        ));
+        assert!(!eligible(&json!({"hook_event_name":"PreToolUse"})));
+        assert!(eligible(&json!({"hook_event_name":"SessionStart"})));
+        assert!(eligible(&json!({"hook_event_name":"PostCompaction"})));
+        assert!(eligible(&json!({"hook_event_name":"UserPromptSubmit"})));
     }
 }

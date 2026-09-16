@@ -213,8 +213,8 @@ mod tests {
         let socket = dir.path().join("herdr.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
         let fixture = dir.path().join("herdr-fixture");
-        let pane = json!({"agent":"codex","agent_session":{"agent":"codex","source":"herdr:codex","kind":"id","value":"session"},"terminal_id":"terminal","pane_id":"w1:p1"});
-        let info = json!({"process_info":{"foreground_processes":[{"name":"codex","pid":std::process::id()}]}});
+        let pane = json!({"agent":"devin","agent_session":{"agent":"devin","source":"herdr:devin","kind":"id","value":"session"},"terminal_id":"terminal","pane_id":"w1:p1"});
+        let info = json!({"process_info":{"foreground_processes":[{"name":"devin","pid":std::process::id()}]}});
         let log = dir.path().join("calls");
         let fail = dir.path().join("fail");
         fs::write(&fixture,format!("#!/bin/sh\ncase \"$1 $2\" in\n'api snapshot') printf '%s' {};;\n'pane get') printf '%s' {};;\n'pane process-info') printf '%s' {};;\n'pane report-metadata') printf '%s\\n' \"$*\" >> {}; if test -f {}; then exit 1; fi;;\nesac\n",

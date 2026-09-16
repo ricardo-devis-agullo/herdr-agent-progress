@@ -17,13 +17,9 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item};
 
 #[derive(clap::Args)]
 pub struct Configure {
-    /// Comma-separated clients to configure. Defaults to installed Claude/Codex.
-    #[arg(long,value_delimiter=',',value_parser=["claude","codex"])]
-    pub clients: Vec<String>,
+    /// Devin CLI user configuration. Defaults to ~/.config/devin/config.json.
     #[arg(long)]
-    pub claude_home: Option<PathBuf>,
-    #[arg(long)]
-    pub codex_home: Option<PathBuf>,
+    pub devin_config: Option<PathBuf>,
     #[arg(long)]
     pub herdr_config: Option<PathBuf>,
 }
@@ -61,6 +57,12 @@ fn removal_baseline(previous: Owned, current: &Owned) -> Result<Option<String>> 
 
 fn home() -> PathBuf {
     PathBuf::from(env::var_os("HOME").unwrap_or_default())
+}
+fn devin_config_path() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("devin/config.json")
 }
 fn config_path() -> PathBuf {
     env::var_os("HERDR_CONFIG_PATH")
@@ -157,22 +159,16 @@ pub fn sidebar(input: &str, remove: bool) -> Result<String> {
         defaults.push(second);
         agents["rows"] = toml_edit::value(defaults);
     }
-    fn edit(item: &mut Item, remove: bool) -> Result<()> {
+    fn edit(item: &mut Item, add: bool) -> Result<()> {
         let rows = item.as_array_mut().context("Sidebar rows must be arrays")?;
         let expected = row();
         let legacy = legacy_row();
-        let is_legacy = |v: &toml_edit::Value| {
-            v.to_string().split_whitespace().collect::<String>()
-                == legacy.to_string().split_whitespace().collect::<String>()
+        let same = |a: &toml_edit::Value, b: &toml_edit::Value| {
+            a.to_string().split_whitespace().collect::<String>()
+                == b.to_string().split_whitespace().collect::<String>()
         };
-        rows.retain(|v| !is_legacy(v));
-        let same = |v: &toml_edit::Value| {
-            v.to_string().split_whitespace().collect::<String>()
-                == expected.to_string().split_whitespace().collect::<String>()
-        };
-        if remove {
-            rows.retain(|v| !same(v));
-        } else if !rows.iter().any(same) {
+        rows.retain(|v| !same(v, &legacy) && !same(v, &expected));
+        if add {
             ensure!(
                 !rows
                     .iter()
@@ -188,22 +184,47 @@ pub fn sidebar(input: &str, remove: bool) -> Result<String> {
         Ok(())
     }
     if let Some(rows) = agents.get_mut("rows").filter(|v| !v.is_none()) {
-        edit(rows, remove)?;
+        edit(rows, false)?;
+    }
+    let base = agents.get("rows").filter(|v| !v.is_none()).cloned();
+    if !remove
+        && agents
+            .get("rows_by_agent")
+            .is_none_or(|item| item.is_none())
+    {
+        agents["rows_by_agent"] = Item::Table(toml_edit::Table::new());
     }
     if let Some(overrides) = agents.get_mut("rows_by_agent").filter(|v| !v.is_none()) {
-        for (_, rows) in overrides
+        let overrides = overrides
             .as_table_like_mut()
-            .context("rows_by_agent must be a table")?
-            .iter_mut()
-        {
-            edit(rows, remove)?;
+            .context("rows_by_agent must be a table")?;
+        for (agent, rows) in overrides.iter_mut() {
+            edit(rows, !remove && agent == "devin")?;
+        }
+        if !remove && overrides.get("devin").is_none() {
+            overrides.insert(
+                "devin",
+                base.clone()
+                    .context("Default sidebar rows are unavailable")?,
+            );
+            edit(overrides.get_mut("devin").unwrap(), true)?;
+        }
+        let redundant = remove
+            && base.as_ref().is_some_and(|base| {
+                overrides.get("devin").is_some_and(|devin| {
+                    base.to_string().split_whitespace().collect::<String>()
+                        == devin.to_string().split_whitespace().collect::<String>()
+                })
+            });
+        if redundant {
+            overrides.remove("devin");
         }
     }
     Ok(doc.to_string())
 }
 
 fn hook_entry(command: &str) -> Value {
-    serde_json_value!({"matcher":"*","hooks":[{"type":"command","command":command,"timeout":10}]})
+    serde_json_value!({"matcher":"","hooks":[{"type":"command","command":command,"timeout":10}]})
 }
 pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
     let root = CstRootNode::parse(input, &Default::default())?;
@@ -219,7 +240,12 @@ pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
             .unwrap(),
     };
     let expected = hook_entry(command);
-    for event in ["SessionStart", "PostToolUse", "UserPromptSubmit"] {
+    for event in [
+        "SessionStart",
+        "PostCompaction",
+        "PostToolUse",
+        "UserPromptSubmit",
+    ] {
         let entries = match hooks.get(event) {
             Some(p) => p.array_value().context("Hook event must be an array")?,
             None if remove => continue,
@@ -240,7 +266,7 @@ pub fn hooks(input: &str, command: &str, remove: bool) -> Result<String> {
         }
         if !remove && !found {
             entries.append(CstInputValue::Object(vec![
-                ("matcher".into(), "*".into()),
+                ("matcher".into(), "".into()),
                 (
                     "hooks".into(),
                     CstInputValue::Array(vec![CstInputValue::Object(vec![
@@ -286,50 +312,25 @@ pub fn configure(options: &Configure, rt: &Runtime, paths: &Paths) -> Result<()>
             command: None,
         },
     ));
-    let selected: Vec<_> = if options.clients.is_empty() {
-        ["claude", "codex"]
-            .into_iter()
-            .filter(|client| Command::new(client).arg("--version").output().is_ok())
-            .map(str::to_owned)
-            .collect()
-    } else {
-        options.clients.clone()
-    };
-    for client in selected {
-        let dir = if client == "claude" {
-            options
-                .claude_home
-                .clone()
-                .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-                .unwrap_or_else(|| home().join(".claude"))
-        } else {
-            options
-                .codex_home
-                .clone()
-                .or_else(|| env::var_os("CODEX_HOME").map(PathBuf::from))
-                .unwrap_or_else(|| home().join(".codex"))
-        };
-        let file = dir.join(if client == "claude" {
-            "settings.json"
-        } else {
-            "hooks.json"
-        });
-        let command = format!(
-            "{} hook --agent {client}",
-            quote(&paths.config.join("herdr-progress").to_string_lossy())
-        );
-        let before = read(&file)?;
-        let after = hooks(before.as_deref().unwrap_or("{}"), &command, false)?;
-        edits.push((
-            file,
-            Owned {
-                before,
-                after,
-                kind: "hooks".into(),
-                command: Some(command),
-            },
-        ));
-    }
+    let file = options
+        .devin_config
+        .clone()
+        .unwrap_or_else(devin_config_path);
+    let command = format!(
+        "{} hook",
+        quote(&paths.config.join("herdr-progress").to_string_lossy())
+    );
+    let before = read(&file)?;
+    let after = hooks(before.as_deref().unwrap_or("{}"), &command, false)?;
+    edits.push((
+        file,
+        Owned {
+            before,
+            after,
+            kind: "hooks".into(),
+            command: Some(command),
+        },
+    ));
     // Parse and check the complete candidate before touching any live config.
     let candidate = paths
         .config
@@ -443,7 +444,7 @@ pub fn configure(options: &Configure, rt: &Runtime, paths: &Paths) -> Result<()>
     )?;
     publisher::start(rt, paths)?;
     println!(
-        "Configured. Restart/resume the selected clients and review their native hook trust prompts. Existing hook permissions are unchanged."
+        "Configured. Restart/resume Devin CLI and review its native hook trust prompts. Existing hook permissions are unchanged."
     );
     Ok(())
 }
@@ -499,7 +500,7 @@ mod tests {
     use super::*;
     #[test]
     fn upgrade_removal_keeps_settings_added_after_first_install() {
-        let command = "'/stable/herdr-progress' hook --agent codex";
+        let command = "'/stable/herdr-progress' hook";
         let original =
             "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"command\":\"native-hook\"}]}]}}";
         let configured = hooks(original, command, false).unwrap();
@@ -577,31 +578,30 @@ mod tests {
     #[test]
     fn existing_hooks_comments_and_user_edits_survive() {
         let original = "{\n// user's comment\n\"theme\": \"dark\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"command\":\"keep\"}]}]}}";
-        let added = hooks(
-            original,
-            "'/path with space/herdr-progress' hook --agent codex",
-            false,
-        )
-        .unwrap();
+        let added = hooks(original, "'/path with space/herdr-progress' hook", false).unwrap();
         assert!(added.contains("// user's comment"));
         assert!(added.contains("keep"));
         assert_eq!(
-            hooks(
-                &added,
-                "'/path with space/herdr-progress' hook --agent codex",
-                false
-            )
-            .unwrap(),
+            hooks(&added, "'/path with space/herdr-progress' hook", false).unwrap(),
             added
         );
-        let removed = hooks(
-            &added,
-            "'/path with space/herdr-progress' hook --agent codex",
-            true,
-        )
-        .unwrap();
+        let removed = hooks(&added, "'/path with space/herdr-progress' hook", true).unwrap();
         assert!(!removed.contains("herdr-progress"));
         assert!(removed.contains("keep"));
+    }
+    #[test]
+    fn devin_hooks_use_supported_events_and_empty_matchers() {
+        let command = "'/plugin/herdr-progress' hook";
+        let configured: Value =
+            serde_json::from_str(&hooks("{}", command, false).unwrap()).unwrap();
+        for event in [
+            "SessionStart",
+            "PostCompaction",
+            "PostToolUse",
+            "UserPromptSubmit",
+        ] {
+            assert_eq!(configured["hooks"][event][0], hook_entry(command));
+        }
     }
     #[test]
     fn sidebar_defaults_overrides_and_budget() {
@@ -615,10 +615,16 @@ mod tests {
                 .unwrap()
                 .contains("$agent_progress_summary")
         );
-        let original = "# preserved\n[ui.sidebar.agents]\nrows=[[\"agent\"]]\n[ui.sidebar.agents.rows_by_agent]\nclaude=[[\"state_icon\",\"agent\"]]\n";
+        let original = "# preserved\n[ui.sidebar.agents]\nrows=[[\"agent\"]]\n[ui.sidebar.agents.rows_by_agent]\nopencode=[[\"state_icon\",\"agent\"]]\ndevin=[[\"state_icon\",\"agent\"]]\n";
         let added = sidebar(original, false).unwrap();
         assert!(added.contains("# preserved"));
-        assert_eq!(added.matches("$agent_progress_summary").count(), 2);
+        assert_eq!(added.matches("$agent_progress_summary").count(), 1);
+        let before = original.parse::<DocumentMut>().unwrap();
+        let after = added.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            before["ui"]["sidebar"]["agents"]["rows_by_agent"]["opencode"].to_string(),
+            after["ui"]["sidebar"]["agents"]["rows_by_agent"]["opencode"].to_string()
+        );
         assert_eq!(sidebar(&added, false).unwrap(), added);
         assert!(!sidebar(&added, true).unwrap().contains("$agent_progress"));
         let full = format!(
@@ -663,7 +669,7 @@ mod tests {
 
     #[test]
     fn uninstall_keeps_user_modified_hook_and_other_rows() {
-        let command = "'/plugin/herdr-progress' hook --agent codex";
+        let command = "'/plugin/herdr-progress' hook";
         let added = hooks("{}", command, false).unwrap();
         let edited = added.replace("\"timeout\": 10", "\"timeout\": 20");
         assert!(

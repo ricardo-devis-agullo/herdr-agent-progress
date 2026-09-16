@@ -3,7 +3,7 @@ name = "herdr-progress"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Agent-reported task progress in Herdr's native sidebar"
+description = "Devin CLI-reported task progress in Herdr's native sidebar"
 
 [dependencies]
 anyhow = "1"

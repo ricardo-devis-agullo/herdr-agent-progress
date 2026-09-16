@@ -2,9 +2,9 @@
 
 When a verified binding is supplied below, report the progress of the user's whole current task through `herdr-progress`. This is your estimate, not a timer or a count of tools. Reporting failures must never stop the actual work. Give one short diagnostic and continue, without retry loops.
 
-Reporting needs access to the local Herdr socket, OS process identity and the plugin's state directory. When the client's sandbox requires approval for that access, use its normal tool permission request for this reporting command. Never disable the sandbox or bypass hook trust. If permission is denied or requests are unavailable, continue the actual task without progress reporting.
+Reporting needs access to the local Herdr socket, OS process identity and the plugin's state directory. When Devin CLI's sandbox requires approval for that access, use its normal tool permission request for this reporting command. Never disable the sandbox or bypass hook trust. If permission is denied or requests are unavailable, continue the actual task without progress reporting.
 
-Only the top-level agent that owns this pane reports. Same-pane helpers and subagents must not use or share its binding. Outside Herdr, do nothing.
+Only the top-level Devin CLI agent that owns this pane reports. Same-pane helpers and subagents must not use or share its binding. Outside Herdr, do nothing.
 
 At genuinely new work, read bound context, then call `begin` with the exact observed task ID, or `none` when no task exists. Do this bookkeeping before task tools or a blocking clarification question, so a prior 100% does not describe new work. Report an initial estimate or unknown activity. This comparison protects against delayed task starts. If it conflicts, re-read context and reconsider which request owns the current task. Never blindly replace the expected ID and retry.
 
